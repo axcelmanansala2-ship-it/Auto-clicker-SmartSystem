@@ -34,16 +34,20 @@ import kotlinx.coroutines.withContext
  * COD Mobile Account Checker Service.
  *
  * Automation loop:
- *  1. Get next PENDING account from AccountRepository.
- *  2. Find "GARENA" button and tap it (or launch CODM app as fallback).
- *  3. Wait for the Garena login screen to appear.
- *  4. Fill in username + password using AccessibilityService.fillTextField().
- *  5. Tap "Login Now".
- *  6. Wait up to 25 seconds for a result:
- *     - "violated" or "abnormal" → BANNED → tap OK → next account
- *     - "CREATE CHARACTER"       → NEW ACCOUNT → press Back → next account
- *     - Timeout (25 s)           → GOOD (made it to lobby) → go home → next account
- *  7. Repeat until no PENDING accounts remain.
+ *  1. Reset any stuck IN_PROGRESS → PENDING (crash recovery).
+ *  2. Get next PENDING account.
+ *  3. Find "GARENA" button and tap it (or launch CODM app as fallback).
+ *  4. Wait for the Garena login screen.
+ *  5. Fill username + password via fillTextField().
+ *  6. Tap "Login Now".
+ *  7. Quick check (5 s) for "Login failed" → INVALID → next account.
+ *  8. Long check (25 s) for result:
+ *     - "violated" / "abnormal" → BANNED → dismiss dialog → next account
+ *     - "CREATE CHARACTER"      → NEW    → dismiss dialog → next account
+ *     - Timeout (25 s)          → GOOD   → go home → next account
+ *
+ * Dialog dismissal uses tapByText("OK") first, then pressBack() as fallback
+ * since Unity game dialogs may not expose buttons in the accessibility tree.
  */
 class AccountCheckerService : Service() {
 
@@ -101,8 +105,7 @@ class AccountCheckerService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 16
-            y = 160
+            x = 16; y = 160
         }
 
         windowManager.addView(overlayView, layoutParams)
@@ -110,16 +113,8 @@ class AccountCheckerService : Service() {
         var initX = 0; var initY = 0; var touchX = 0f; var touchY = 0f
         overlayView.setOnTouchListener { _, ev ->
             when (ev.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    initX = layoutParams.x; initY = layoutParams.y
-                    touchX = ev.rawX; touchY = ev.rawY; true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    layoutParams.x = initX + (ev.rawX - touchX).toInt()
-                    layoutParams.y = initY + (ev.rawY - touchY).toInt()
-                    windowManager.updateViewLayout(overlayView, layoutParams)
-                    true
-                }
+                MotionEvent.ACTION_DOWN -> { initX = layoutParams.x; initY = layoutParams.y; touchX = ev.rawX; touchY = ev.rawY; true }
+                MotionEvent.ACTION_MOVE -> { layoutParams.x = initX + (ev.rawX - touchX).toInt(); layoutParams.y = initY + (ev.rawY - touchY).toInt(); windowManager.updateViewLayout(overlayView, layoutParams); true }
                 else -> false
             }
         }
@@ -133,8 +128,7 @@ class AccountCheckerService : Service() {
     private fun updateOverlay(status: String, account: String, counts: String) {
         binding.btnCheckerToggle.text = if (isRunning) "STOP" else "START"
         binding.btnCheckerToggle.setBackgroundColor(
-            if (isRunning) getColor(R.color.colorOverlayStop)
-            else getColor(R.color.colorCheckerStart)
+            if (isRunning) getColor(R.color.colorOverlayStop) else getColor(R.color.colorCheckerStart)
         )
         binding.tvCheckerStatus.text = status
         binding.tvCheckerAccount.text = account
@@ -143,11 +137,39 @@ class AccountCheckerService : Service() {
 
     private fun buildCountsText(): String {
         val all = repo.getAll()
-        val pending = all.count { it.status == AccountStatus.PENDING }
-        val banned = all.count { it.status == AccountStatus.BANNED }
-        val newAcc = all.count { it.status == AccountStatus.NEW_ACCOUNT }
-        val good = all.count { it.status == AccountStatus.GOOD }
-        return "P:$pending B:$banned N:$newAcc G:$good"
+        val p = all.count { it.status == AccountStatus.PENDING }
+        val b = all.count { it.status == AccountStatus.BANNED }
+        val n = all.count { it.status == AccountStatus.NEW_ACCOUNT }
+        val g = all.count { it.status == AccountStatus.GOOD }
+        val inv = all.count { it.status == AccountStatus.INVALID }
+        return "P:$p B:$b N:$n G:$g F:$inv"
+    }
+
+    // ─── Dialog dismissal ─────────────────────────────────────────────────────
+
+    /**
+     * Dismisses a game dialog. Tries accessibility tap on "OK" first;
+     * falls back to pressBack() since Unity game dialogs may not expose buttons.
+     */
+    private suspend fun dismissDialog(svc: AutoClickAccessibilityService) {
+        // Try tapping OK button via accessibility
+        val okPoint = withContext(Dispatchers.IO) { svc.findNodeCenter("OK") }
+        if (okPoint != null) {
+            svc.tap(okPoint.x, okPoint.y)
+            delay(600)
+        } else {
+            // Fallback: BACK button dismisses most game dialogs
+            svc.pressBack()
+            delay(600)
+        }
+        // Double-check: if dialog still showing, press BACK again
+        val stillShowing = withContext(Dispatchers.IO) {
+            svc.hasAnyText("Attention", "violated", "abnormal", "CREATE CHARACTER")
+        }
+        if (stillShowing != null) {
+            svc.pressBack()
+            delay(500)
+        }
     }
 
     // ─── Checker loop ─────────────────────────────────────────────────────────
@@ -157,6 +179,10 @@ class AccountCheckerService : Service() {
             Toast.makeText(this, "Enable Accessibility Service first", Toast.LENGTH_LONG).show()
             return
         }
+
+        // ── Fix: reset stuck IN_PROGRESS accounts back to PENDING ─────────────
+        repo.resetInProgress()
+
         if (repo.getNextPending() == null) {
             Toast.makeText(this, "No pending accounts to check", Toast.LENGTH_SHORT).show()
             return
@@ -170,7 +196,7 @@ class AccountCheckerService : Service() {
                 val account = repo.getNextPending()
                 if (account == null) {
                     withContext(Dispatchers.Main) {
-                        updateOverlay("Done! ✓", "All accounts checked", buildCountsText())
+                        updateOverlay("Done! ✓", "All checked", buildCountsText())
                         isRunning = false
                     }
                     break
@@ -180,148 +206,135 @@ class AccountCheckerService : Service() {
                 val shortUser = account.username.take(14)
 
                 // ── Step 1: Open GARENA ──────────────────────────────────────
-                withContext(Dispatchers.Main) {
-                    updateOverlay("Opening GARENA…", shortUser, buildCountsText())
-                }
+                withContext(Dispatchers.Main) { updateOverlay("Opening GARENA…", shortUser, buildCountsText()) }
 
                 val svc = AutoClickAccessibilityService.instance ?: break
 
-                // Try tapping GARENA button on screen first
                 val garenaPoint = withContext(Dispatchers.IO) { svc.findNodeCenter("GARENA") }
                 if (garenaPoint != null) {
                     svc.tap(garenaPoint.x, garenaPoint.y)
                 } else {
-                    // Fallback: launch CODM app by package name or label
                     val launched = withContext(Dispatchers.Main) { tryLaunchCODM() }
                     if (!launched) {
                         Log.w(TAG, "Could not find GARENA or launch CODM")
-                        delay(2000)
+                        repo.setStatus(account.id, AccountStatus.PENDING)
+                        delay(3000)
                         continue
                     }
                 }
 
                 // ── Step 2: Wait for Garena login screen ─────────────────────
-                withContext(Dispatchers.Main) {
-                    updateOverlay("Waiting login…", shortUser, buildCountsText())
-                }
+                withContext(Dispatchers.Main) { updateOverlay("Waiting login…", shortUser, buildCountsText()) }
 
                 var loginReady = false
-                repeat(20) {
+                repeat(24) {  // 24 × 500ms = 12s
                     if (!loginReady) {
                         val found = withContext(Dispatchers.IO) {
                             svc.hasAnyText("Garena Username", "Login Now", "Email or Phone")
                         }
-                        if (found != null) loginReady = true
-                        else delay(500)
+                        if (found != null) loginReady = true else delay(500)
                     }
                 }
 
                 if (!loginReady) {
-                    Log.w(TAG, "Login screen not found, skipping account")
+                    Log.w(TAG, "Login screen not found")
                     repo.setStatus(account.id, AccountStatus.PENDING)
                     delay(2000)
                     continue
                 }
 
-                delay(600)
+                delay(500)
 
                 // ── Step 3: Fill username ─────────────────────────────────────
-                withContext(Dispatchers.Main) {
-                    updateOverlay("Filling login…", shortUser, buildCountsText())
-                }
+                withContext(Dispatchers.Main) { updateOverlay("Filling creds…", shortUser, buildCountsText()) }
 
-                // Clear and set username field
-                var filled = withContext(Dispatchers.IO) {
+                val filled = withContext(Dispatchers.IO) {
                     svc.fillTextField("Garena Username", account.username)
+                        || svc.fillTextField("Email or Phone", account.username)
                 }
-                if (!filled) {
-                    withContext(Dispatchers.IO) {
-                        svc.fillTextField("Email or Phone", account.username)
-                    }
-                }
+                if (!filled) Log.w(TAG, "Username field not found for ${account.username}")
 
                 delay(400)
 
                 // ── Step 4: Fill password ─────────────────────────────────────
-                withContext(Dispatchers.IO) {
-                    svc.fillTextField("Password", account.password)
-                }
+                withContext(Dispatchers.IO) { svc.fillTextField("Password", account.password) }
 
                 delay(400)
 
                 // ── Step 5: Tap Login Now ─────────────────────────────────────
-                withContext(Dispatchers.Main) {
-                    updateOverlay("Logging in…", shortUser, buildCountsText())
-                }
+                withContext(Dispatchers.Main) { updateOverlay("Logging in…", shortUser, buildCountsText()) }
 
                 val loginPoint = withContext(Dispatchers.IO) { svc.findNodeCenter("Login Now") }
-                if (loginPoint != null) {
-                    svc.tap(loginPoint.x, loginPoint.y)
-                }
+                loginPoint?.let { svc.tap(it.x, it.y) }
 
-                delay(600)
+                delay(800)
 
-                // ── Step 6: Wait for result (up to 25 seconds) ───────────────
-                withContext(Dispatchers.Main) {
-                    updateOverlay("Checking…", shortUser, buildCountsText())
-                }
+                // ── Step 6a: Quick check for "Login failed" (5 s) ─────────────
+                withContext(Dispatchers.Main) { updateOverlay("Checking…", shortUser, buildCountsText()) }
 
                 var resultHandled = false
-                repeat(50) { // 50 × 500ms = 25s
+                repeat(10) {  // 10 × 500ms = 5s
                     if (!resultHandled) {
                         val hit = withContext(Dispatchers.IO) {
-                            svc.hasAnyText(
-                                "violated",       // banned
-                                "abnormal",       // banned (env check)
-                                "CREATE CHARACTER" // new account
-                            )
+                            svc.hasAnyText("Login failed", "incorrect", "invalid")
                         }
+                        if (hit != null) {
+                            Log.d(TAG, "INVALID: ${account.username} → $hit")
+                            repo.setStatus(account.id, AccountStatus.INVALID, "Login failed: wrong credentials")
+                            withContext(Dispatchers.Main) { updateOverlay("Invalid ✗", shortUser, buildCountsText()) }
+                            delay(800)
+                            resultHandled = true
+                        } else {
+                            delay(500)
+                        }
+                    }
+                }
 
+                if (resultHandled) { delay(1000); continue }
+
+                // ── Step 6b: Long check for ban/new/good (25 s) ───────────────
+                repeat(50) {  // 50 × 500ms = 25s
+                    if (!resultHandled) {
+                        val hit = withContext(Dispatchers.IO) {
+                            svc.hasAnyText("violated", "abnormal", "CREATE CHARACTER", "Login failed", "incorrect")
+                        }
                         when {
                             hit != null && (hit.contains("violated") || hit.contains("abnormal")) -> {
                                 Log.d(TAG, "BANNED: ${account.username}")
                                 repo.setStatus(account.id, AccountStatus.BANNED, hit)
-                                withContext(Dispatchers.Main) {
-                                    updateOverlay("Banned ✗", shortUser, buildCountsText())
-                                }
-                                // Tap OK to dismiss the ban dialog
-                                withContext(Dispatchers.IO) { svc.findNodeCenter("OK") }?.let { pt ->
-                                    svc.tap(pt.x, pt.y)
-                                }
-                                delay(1500)
+                                withContext(Dispatchers.Main) { updateOverlay("Banned ✗", shortUser, buildCountsText()) }
+                                dismissDialog(svc)
                                 resultHandled = true
                             }
-
                             hit != null && hit.contains("create character") -> {
                                 Log.d(TAG, "NEW ACCOUNT: ${account.username}")
                                 repo.setStatus(account.id, AccountStatus.NEW_ACCOUNT)
-                                withContext(Dispatchers.Main) {
-                                    updateOverlay("New acct ◆", shortUser, buildCountsText())
-                                }
-                                // Close the dialog by pressing back (X button)
-                                svc.pressBack()
-                                delay(1500)
+                                withContext(Dispatchers.Main) { updateOverlay("New acct ◆", shortUser, buildCountsText()) }
+                                dismissDialog(svc)
                                 resultHandled = true
                             }
+                            hit != null && (hit.contains("Login failed") || hit.contains("incorrect")) -> {
+                                Log.d(TAG, "INVALID (late): ${account.username}")
+                                repo.setStatus(account.id, AccountStatus.INVALID, "Login failed")
+                                withContext(Dispatchers.Main) { updateOverlay("Invalid ✗", shortUser, buildCountsText()) }
+                                delay(800)
+                                resultHandled = true
+                            }
+                            else -> delay(500)
                         }
-                        if (!resultHandled) delay(500)
                     }
                 }
 
-                // Timeout = got into lobby = GOOD account
+                // ── Timeout → GOOD (reached lobby) ────────────────────────────
                 if (!resultHandled) {
                     Log.d(TAG, "GOOD: ${account.username}")
                     repo.setStatus(account.id, AccountStatus.GOOD)
-                    withContext(Dispatchers.Main) {
-                        updateOverlay("Good ✓", shortUser, buildCountsText())
-                    }
-                    // Go home so we can loop back to GARENA
+                    withContext(Dispatchers.Main) { updateOverlay("Good ✓", shortUser, buildCountsText()) }
                     svc.pressHome()
-                    delay(2000)
+                    delay(2500)
                 }
 
-                // Small pause before next account
-                delay(1500)
+                delay(1200)
             }
         }
     }
@@ -330,6 +343,8 @@ class AccountCheckerService : Service() {
         checkerJob?.cancel()
         checkerJob = null
         isRunning = false
+        // Reset any IN_PROGRESS back to PENDING so next start picks them up
+        if (::repo.isInitialized) repo.resetInProgress()
         updateOverlay("Stopped", "", buildCountsText())
     }
 
@@ -337,22 +352,18 @@ class AccountCheckerService : Service() {
 
     private fun tryLaunchCODM(): Boolean {
         val codmPackages = listOf(
-            "com.activision.callofduty.shooter",  // CODM SEA
-            "com.tencent.ig",                       // PUBG (just in case)
-            "com.garena.game.codm"                  // CODM Garena
+            "com.activision.callofduty.shooter",
+            "com.garena.game.codm",
+            "com.tencent.ig"
         )
         for (pkg in codmPackages) {
-            val intent = packageManager.getLaunchIntentForPackage(pkg)
-            if (intent != null) {
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-                startActivity(intent)
-                return true
-            }
+            val intent = packageManager.getLaunchIntentForPackage(pkg) ?: continue
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            startActivity(intent)
+            return true
         }
-        // Fallback: search for any app with "call of duty" or "cod" in its label
         val pm = packageManager
-        val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-        val match = apps.firstOrNull { app ->
+        val match = pm.getInstalledApplications(PackageManager.GET_META_DATA).firstOrNull { app ->
             try {
                 val label = pm.getApplicationLabel(app).toString().lowercase()
                 label.contains("call of duty") || label.contains("garena")

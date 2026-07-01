@@ -5,7 +5,6 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -26,7 +25,8 @@ class AccountCheckerActivity : AppCompatActivity() {
     private lateinit var repo: AccountRepository
     private lateinit var adapter: AccountAdapter
 
-    private var currentTab = AccountStatus.PENDING
+    // 0=Pending(+InProgress), 1=Banned, 2=New, 3=Good, 4=Invalid
+    private var currentTabIdx = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,18 +56,13 @@ class AccountCheckerActivity : AppCompatActivity() {
     }
 
     private fun setupTabs() {
-        listOf("Pending", "Banned", "New Account", "Good").forEach { label ->
+        listOf("Pending", "Banned", "New Acct", "Good", "Invalid").forEach { label ->
             binding.tabLayout.addTab(binding.tabLayout.newTab().setText(label))
         }
         binding.tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
             override fun onTabSelected(tab: TabLayout.Tab) {
-                currentTab = when (tab.position) {
-                    0 -> AccountStatus.PENDING
-                    1 -> AccountStatus.BANNED
-                    2 -> AccountStatus.NEW_ACCOUNT
-                    else -> AccountStatus.GOOD
-                }
-                binding.addPanel.visibility = if (currentTab == AccountStatus.PENDING) View.VISIBLE else View.GONE
+                currentTabIdx = tab.position
+                binding.addPanel.visibility = if (currentTabIdx == 0) View.VISIBLE else View.GONE
                 loadCurrentTab()
             }
             override fun onTabUnselected(tab: TabLayout.Tab) {}
@@ -76,9 +71,7 @@ class AccountCheckerActivity : AppCompatActivity() {
     }
 
     private fun setupList() {
-        adapter = AccountAdapter(emptyList()) { account ->
-            showAccountOptions(account)
-        }
+        adapter = AccountAdapter(emptyList()) { account -> showAccountOptions(account) }
         binding.recyclerAccounts.layoutManager = LinearLayoutManager(this)
         binding.recyclerAccounts.addItemDecoration(
             DividerItemDecoration(this, DividerItemDecoration.VERTICAL)
@@ -93,10 +86,12 @@ class AccountCheckerActivity : AppCompatActivity() {
                 Toast.makeText(this, "Enter accounts (user:pass per line)", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+            val before = repo.getAll().size
             repo.parseAndAdd(raw)
+            val added = repo.getAll().size - before
             binding.etAccounts.text?.clear()
             loadCurrentTab()
-            Toast.makeText(this, "Accounts added", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "$added account(s) added", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -106,11 +101,19 @@ class AccountCheckerActivity : AppCompatActivity() {
                 Toast.makeText(this, "Enable Accessibility Service first!", Toast.LENGTH_LONG).show()
                 return@setOnClickListener
             }
+            // Reset stuck IN_PROGRESS before starting
+            repo.resetInProgress()
+            val pending = repo.countPending()
+            if (pending == 0) {
+                Toast.makeText(this, "No pending accounts to check", Toast.LENGTH_SHORT).show()
+                loadCurrentTab()
+                return@setOnClickListener
+            }
             ContextCompat.startForegroundService(this,
                 Intent(this, AccountCheckerService::class.java).apply {
                     action = AccountCheckerService.ACTION_START
                 })
-            Toast.makeText(this, "Account checker started — check the floating overlay", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Checker started ($pending accounts) — check the overlay", Toast.LENGTH_SHORT).show()
             finish()
         }
 
@@ -118,15 +121,17 @@ class AccountCheckerActivity : AppCompatActivity() {
             startService(Intent(this, AccountCheckerService::class.java).apply {
                 action = AccountCheckerService.ACTION_STOP
             })
-            Toast.makeText(this, "Account checker stopped", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Checker stopped", Toast.LENGTH_SHORT).show()
+            loadCurrentTab()
         }
 
         binding.btnClearTab.setOnClickListener {
+            val statusToClear = currentTabStatuses()[0]
+            val label = statusToClear.name.replace('_', ' ')
             AlertDialog.Builder(this)
-                .setTitle("Clear ${currentTab.name.replace('_', ' ')} accounts?")
-                .setMessage("This will remove all ${currentTab.name.replace('_', ' ')} accounts from the list.")
+                .setTitle("Clear $label accounts?")
                 .setPositiveButton("Clear") { _, _ ->
-                    repo.clearByStatus(currentTab)
+                    currentTabStatuses().forEach { repo.clearByStatus(it) }
                     loadCurrentTab()
                     Toast.makeText(this, "Cleared", Toast.LENGTH_SHORT).show()
                 }
@@ -135,44 +140,51 @@ class AccountCheckerActivity : AppCompatActivity() {
         }
     }
 
+    /** Returns the statuses shown in the current tab. */
+    private fun currentTabStatuses(): List<AccountStatus> = when (currentTabIdx) {
+        0 -> listOf(AccountStatus.PENDING, AccountStatus.IN_PROGRESS)
+        1 -> listOf(AccountStatus.BANNED)
+        2 -> listOf(AccountStatus.NEW_ACCOUNT)
+        3 -> listOf(AccountStatus.GOOD)
+        4 -> listOf(AccountStatus.INVALID)
+        else -> listOf(AccountStatus.PENDING)
+    }
+
     private fun loadCurrentTab() {
-        val accounts = repo.getByStatus(currentTab)
+        val accounts = repo.getByStatus(*currentTabStatuses().toTypedArray())
         adapter.items = accounts
         adapter.notifyDataSetChanged()
 
         binding.tvEmpty.visibility = if (accounts.isEmpty()) View.VISIBLE else View.GONE
-        binding.tvEmpty.text = when (currentTab) {
-            AccountStatus.PENDING -> "No pending accounts.\nAdd accounts below (user:pass per line)."
-            AccountStatus.BANNED -> "No banned accounts yet."
-            AccountStatus.NEW_ACCOUNT -> "No new accounts yet."
-            AccountStatus.GOOD -> "No good accounts yet."
+        binding.tvEmpty.text = when (currentTabIdx) {
+            0 -> "No pending accounts.\nAdd below (user:pass per line)."
+            1 -> "No banned accounts yet."
+            2 -> "No new accounts yet."
+            3 -> "No good accounts yet."
+            4 -> "No invalid/failed accounts."
             else -> ""
         }
 
-        // Update tab badges
-        binding.tabLayout.getTabAt(0)?.text = "Pending (${repo.getByStatus(AccountStatus.PENDING).size})"
-        binding.tabLayout.getTabAt(1)?.text = "Banned (${repo.getByStatus(AccountStatus.BANNED).size})"
-        binding.tabLayout.getTabAt(2)?.text = "New (${repo.getByStatus(AccountStatus.NEW_ACCOUNT).size})"
-        binding.tabLayout.getTabAt(3)?.text = "Good (${repo.getByStatus(AccountStatus.GOOD).size})"
+        // Update tab counts
+        val all = repo.getAll()
+        binding.tabLayout.getTabAt(0)?.text = "Pending (${all.count { it.status == AccountStatus.PENDING || it.status == AccountStatus.IN_PROGRESS }})"
+        binding.tabLayout.getTabAt(1)?.text = "Banned (${all.count { it.status == AccountStatus.BANNED }})"
+        binding.tabLayout.getTabAt(2)?.text = "New (${all.count { it.status == AccountStatus.NEW_ACCOUNT }})"
+        binding.tabLayout.getTabAt(3)?.text = "Good (${all.count { it.status == AccountStatus.GOOD }})"
+        binding.tabLayout.getTabAt(4)?.text = "Invalid (${all.count { it.status == AccountStatus.INVALID }})"
     }
 
     private fun showAccountOptions(account: Account) {
         val options = mutableListOf("Delete")
-        if (currentTab != AccountStatus.PENDING) options.add(0, "Move to Pending")
+        if (account.status != AccountStatus.PENDING) options.add(0, "Move to Pending")
 
         AlertDialog.Builder(this)
             .setTitle(account.username)
+            .setMessage(if (account.note.isNotBlank()) account.note else null)
             .setItems(options.toTypedArray()) { _, which ->
-                val choice = options[which]
-                when (choice) {
-                    "Delete" -> {
-                        repo.remove(account.id)
-                        loadCurrentTab()
-                    }
-                    "Move to Pending" -> {
-                        repo.setStatus(account.id, AccountStatus.PENDING)
-                        loadCurrentTab()
-                    }
+                when (options[which]) {
+                    "Delete" -> { repo.remove(account.id); loadCurrentTab() }
+                    "Move to Pending" -> { repo.setStatus(account.id, AccountStatus.PENDING); loadCurrentTab() }
                 }
             }
             .show()
@@ -196,16 +208,22 @@ class AccountAdapter(
         with(holder.binding) {
             tvUsername.text = acc.username
             tvPasswordMasked.text = "●".repeat(minOf(acc.password.length, 8))
-            tvNote.text = acc.note.take(40)
+            tvNote.text = acc.note.take(50)
             tvNote.visibility = if (acc.note.isNotBlank()) View.VISIBLE else View.GONE
             val statusColor = when (acc.status) {
                 AccountStatus.BANNED -> 0xFFFF5252.toInt()
                 AccountStatus.NEW_ACCOUNT -> 0xFFFFD740.toInt()
                 AccountStatus.GOOD -> 0xFF69F0AE.toInt()
                 AccountStatus.IN_PROGRESS -> 0xFF00E5FF.toInt()
+                AccountStatus.INVALID -> 0xFFFF9800.toInt()
                 else -> 0xAAFFFFFF.toInt()
             }
-            tvStatus.text = acc.status.name.replace('_', ' ')
+            tvStatus.text = when (acc.status) {
+                AccountStatus.IN_PROGRESS -> "RUNNING"
+                AccountStatus.NEW_ACCOUNT -> "NEW"
+                AccountStatus.INVALID -> "INVALID"
+                else -> acc.status.name
+            }
             tvStatus.setTextColor(statusColor)
         }
         holder.binding.root.setOnClickListener { onClick(acc) }
