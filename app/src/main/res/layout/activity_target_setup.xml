@@ -11,7 +11,7 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Add targets in order. The app will look for Step 1 text first, tap it, then look for Step 2 text, and so on."
+        android:text="Add targets in order. The app taps Step 1 text first, then Step 2, and so on in a loop."
         android:textColor="#AAFFFFFF"
         android:textSize="12sp"
         android:layout_marginBottom="12dp"
@@ -34,7 +34,7 @@
             <com.google.android.material.textfield.TextInputLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="Step name (e.g. Open Via)"
+                android:hint="Config name (e.g. Open Via)"
                 style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
                 android:layout_marginBottom="8dp">
 

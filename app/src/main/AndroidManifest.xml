@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission"
+        xmlns:tools="http://schemas.android.com/tools" />
 
     <application
         android:allowBackup="true"
@@ -13,6 +16,8 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.SmartAutoClicker">
+
+        <!-- ── Activities ─────────────────────────────────────────────── -->
 
         <activity
             android:name=".MainActivity"
@@ -25,13 +30,24 @@
             </intent-filter>
         </activity>
 
+        <!-- Existing auto-clicker target setup -->
         <activity
             android:name=".TargetSetupActivity"
             android:exported="false"
             android:label="@string/title_target_setup"
             android:parentActivityName=".MainActivity" />
 
-        <!-- Floating overlay service — no media projection needed anymore -->
+        <!-- New COD account checker -->
+        <activity
+            android:name=".AccountCheckerActivity"
+            android:exported="false"
+            android:label="Account Checker"
+            android:windowSoftInputMode="adjustResize"
+            android:parentActivityName=".MainActivity" />
+
+        <!-- ── Services ───────────────────────────────────────────────── -->
+
+        <!-- Existing floating overlay / auto-click service -->
         <service
             android:name=".FloatingOverlayService"
             android:exported="false"
@@ -41,7 +57,17 @@
                 android:value="overlay" />
         </service>
 
-        <!-- Accessibility service for node finding + tapping -->
+        <!-- New COD account checker overlay service -->
+        <service
+            android:name=".AccountCheckerService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="overlay" />
+        </service>
+
+        <!-- Accessibility service (shared by both features) -->
         <service
             android:name=".AutoClickAccessibilityService"
             android:exported="true"

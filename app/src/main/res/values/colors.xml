@@ -14,4 +14,6 @@
     <color name="colorOverlayStart">#69F0AE</color>
     <color name="colorOverlayStop">#FF5252</color>
     <color name="colorOverlayBg">#CC1B1F3B</color>
+    <!-- Account checker overlay uses orange to distinguish from auto-clicker -->
+    <color name="colorCheckerStart">#FF9800</color>
 </resources>

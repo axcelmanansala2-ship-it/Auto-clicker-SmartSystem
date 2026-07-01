@@ -11,10 +11,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.smartsystem.autoclicker.databinding.ActivityMainBinding
 
-/**
- * Entry point — shows permission status and lets user start/stop the overlay service.
- * No longer needs MediaProjection permission (removed OCR approach).
- */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
@@ -44,6 +40,11 @@ class MainActivity : AppCompatActivity() {
         }
         binding.btnStartService.setOnClickListener { startOverlayService() }
         binding.btnStopService.setOnClickListener { stopOverlayService() }
+
+        // NEW: Account Checker
+        binding.btnAccountChecker.setOnClickListener {
+            startActivity(Intent(this, AccountCheckerActivity::class.java))
+        }
     }
 
     private fun refreshPermissionStatus() {
@@ -66,8 +67,7 @@ class MainActivity : AppCompatActivity() {
         else
             getString(R.string.status_missing)
         binding.tvStatus.setTextColor(
-            ContextCompat.getColor(this,
-                if (allReady) R.color.colorSuccess else R.color.colorWarning)
+            if (allReady) getColor(R.color.colorSuccess) else getColor(R.color.colorWarning)
         )
     }
 
