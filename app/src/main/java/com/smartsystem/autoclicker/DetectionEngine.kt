@@ -12,49 +12,44 @@ import com.smartsystem.autoclicker.models.DetectionTarget
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
-/**
- * Analyses a [Bitmap] screenshot using ML Kit OCR and returns
- * the center coordinate of the first matched [DetectionTarget].
- *
- * All methods are suspend functions — call from a coroutine.
- */
 class DetectionEngine {
 
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
-    /**
-     * Given a screenshot [bitmap] and a list of [targets] (in order),
-     * returns the first target whose text was found along with its center point.
-     */
-    suspend fun findFirst(
-        bitmap: Bitmap,
-        targets: List<DetectionTarget>
-    ): Pair<DetectionTarget, PointF>? {
-        val visionResult = runOcr(bitmap) ?: return null
-        val blocks = visionResult.textBlocks
+    data class DetectionResult(
+        val target: DetectionTarget,
+        val tapPoint: PointF,
+        val allDetectedText: String
+    )
 
-        for (target in targets) {
-            if (!target.enabled) continue
-            val query = target.textQuery.trim()
-            val hit = findTextInBlocks(blocks, query)
-            if (hit != null) {
-                val center = rectCenter(hit)
-                Log.d(TAG, "Found '${target.textQuery}' at $center")
-                return Pair(target, center)
+    /**
+     * Looks ONLY for [target] text in the screenshot.
+     * Returns null if not found, along with all detected text for debugging.
+     */
+    suspend fun findTarget(
+        bitmap: Bitmap,
+        target: DetectionTarget
+    ): Pair<PointF?, String> {
+        val visionResult = runOcr(bitmap) ?: return Pair(null, "(OCR failed)")
+        val allText = buildDebugText(visionResult.textBlocks)
+        val query = target.textQuery.trim()
+        val hit = findTextInBlocks(visionResult.textBlocks, query)
+        return if (hit != null) {
+            Pair(rectCenter(hit), allText)
+        } else {
+            Pair(null, allText)
+        }
+    }
+
+    private fun buildDebugText(blocks: List<Text.TextBlock>): String {
+        val words = mutableListOf<String>()
+        for (block in blocks) {
+            for (line in block.lines) {
+                words.add(line.text)
             }
         }
-        return null
+        return words.joinToString(" | ").take(200)
     }
-
-    /**
-     * Returns all detected text blocks as flat strings for debugging.
-     */
-    suspend fun debugText(bitmap: Bitmap): String {
-        val result = runOcr(bitmap) ?: return "(OCR failed)"
-        return result.textBlocks.joinToString("\n") { it.text }
-    }
-
-    // ─── private helpers ─────────────────────────────────────────────────────
 
     private suspend fun runOcr(bitmap: Bitmap): Text? =
         suspendCancellableCoroutine { cont ->
@@ -67,24 +62,30 @@ class DetectionEngine {
                 }
         }
 
-    /** Search for [query] (case-insensitive) across all text blocks/lines/elements. */
     private fun findTextInBlocks(blocks: List<Text.TextBlock>, query: String): RectF? {
-        val q = query.lowercase()
+        val q = query.lowercase().trim()
+        // Search in order: elements → lines → blocks (smallest → largest)
         for (block in blocks) {
             for (line in block.lines) {
-                if (line.text.lowercase().contains(q)) {
-                    return line.boundingBox?.let {
-                        RectF(it.left.toFloat(), it.top.toFloat(),
-                              it.right.toFloat(), it.bottom.toFloat())
-                    }
-                }
                 for (element in line.elements) {
-                    if (element.text.lowercase().contains(q)) {
+                    if (element.text.lowercase().trim().contains(q)) {
                         return element.boundingBox?.let {
                             RectF(it.left.toFloat(), it.top.toFloat(),
-                                  it.right.toFloat(), it.bottom.toFloat())
+                                it.right.toFloat(), it.bottom.toFloat())
                         }
                     }
+                }
+                if (line.text.lowercase().trim().contains(q)) {
+                    return line.boundingBox?.let {
+                        RectF(it.left.toFloat(), it.top.toFloat(),
+                            it.right.toFloat(), it.bottom.toFloat())
+                    }
+                }
+            }
+            if (block.text.lowercase().trim().contains(q)) {
+                return block.boundingBox?.let {
+                    RectF(it.left.toFloat(), it.top.toFloat(),
+                        it.right.toFloat(), it.bottom.toFloat())
                 }
             }
         }
@@ -93,9 +94,7 @@ class DetectionEngine {
 
     private fun rectCenter(rect: RectF) = PointF(rect.centerX(), rect.centerY())
 
-    fun close() {
-        recognizer.close()
-    }
+    fun close() = recognizer.close()
 
     companion object {
         private const val TAG = "DetectionEngine"

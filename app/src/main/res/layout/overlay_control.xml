@@ -1,18 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="wrap_content"
-    android:layout_height="wrap_content">
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="130dp"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@color/colorOverlayBg"
+    android:padding="6dp">
 
     <Button
         android:id="@+id/btnToggle"
-        android:layout_width="72dp"
-        android:layout_height="72dp"
-        android:text="@string/btn_start"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:text="START"
         android:textColor="@color/colorPrimary"
-        android:textSize="12sp"
+        android:textSize="13sp"
         android:textStyle="bold"
         android:backgroundTint="@color/colorOverlayStart"
-        android:elevation="8dp"
         android:stateListAnimator="@null" />
 
-</FrameLayout>
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textColor="#FFFFFF"
+        android:textSize="9sp"
+        android:maxLines="2"
+        android:ellipsize="end"
+        android:paddingTop="3dp" />
+
+    <TextView
+        android:id="@+id/tvLookingFor"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textColor="@color/colorSecondary"
+        android:textSize="9sp"
+        android:textStyle="bold"
+        android:maxLines="1"
+        android:ellipsize="end" />
+
+</LinearLayout>

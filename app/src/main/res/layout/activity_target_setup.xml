@@ -1,10 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:background="@color/colorBackground"
     android:padding="16dp">
+
+    <!-- Instructions -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Add targets in order. The app will look for Step 1 text first, tap it, then look for Step 2 text, and so on."
+        android:textColor="#AAFFFFFF"
+        android:textSize="12sp"
+        android:layout_marginBottom="12dp"
+        android:lineSpacingExtra="2dp" />
 
     <!-- Add target form -->
     <com.google.android.material.card.MaterialCardView
@@ -12,8 +23,7 @@
         android:layout_height="wrap_content"
         android:layout_marginBottom="16dp"
         app:cardBackgroundColor="@color/colorSurface"
-        app:cardCornerRadius="12dp"
-        xmlns:app="http://schemas.android.com/apk/res-auto">
+        app:cardCornerRadius="12dp">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -24,7 +34,7 @@
             <com.google.android.material.textfield.TextInputLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="@string/hint_target_label"
+                android:hint="Step name (e.g. Open Via)"
                 style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
                 android:layout_marginBottom="8dp">
 
@@ -39,7 +49,7 @@
             <com.google.android.material.textfield.TextInputLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="@string/hint_target_text"
+                android:hint="Text to find on screen (e.g. Via)"
                 style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
                 android:layout_marginBottom="8dp">
 
@@ -54,7 +64,7 @@
             <com.google.android.material.textfield.TextInputLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="Delay after tap (ms, default 500)"
+                android:hint="Wait after tap (ms, e.g. 2000)"
                 style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
                 android:layout_marginBottom="12dp">
 
@@ -70,14 +80,23 @@
                 android:id="@+id/btnAddTarget"
                 android:layout_width="match_parent"
                 android:layout_height="48dp"
-                android:text="@string/btn_add_target"
+                android:text="ADD STEP"
                 android:backgroundTint="@color/colorSecondary"
                 android:textColor="@color/colorPrimary"
                 android:textStyle="bold" />
         </LinearLayout>
     </com.google.android.material.card.MaterialCardView>
 
-    <!-- Empty state -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="DETECTION STEPS (in order):"
+        android:textColor="@color/colorSecondary"
+        android:textSize="11sp"
+        android:textStyle="bold"
+        android:letterSpacing="0.08"
+        android:layout_marginBottom="8dp" />
+
     <TextView
         android:id="@+id/tvNoTargets"
         android:layout_width="match_parent"
@@ -89,7 +108,6 @@
         android:padding="24dp"
         android:visibility="gone" />
 
-    <!-- Target list -->
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/recyclerTargets"
         android:layout_width="match_parent"
