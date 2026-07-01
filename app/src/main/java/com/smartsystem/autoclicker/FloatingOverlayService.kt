@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
@@ -18,7 +19,6 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
 import com.smartsystem.autoclicker.databinding.OverlayControlBinding
-import com.smartsystem.autoclicker.models.DetectionTarget
 import com.smartsystem.autoclicker.models.TargetRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,16 +30,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Foreground service — floating Start/Stop overlay + sequential detection loop.
+ * Foreground overlay service — sequential detection + tap loop.
  *
- * Detection now uses AutoClickAccessibilityService.findNodeCenter() which reads
- * the actual Android UI tree instead of OCR screenshots. This is more accurate,
- * faster, and not confused by wallpapers or the overlay itself.
+ * Detection strategy (tried in order for each step):
+ *  1. AccessibilityService.findNodeCenter(text) — reads real UI tree (fast, accurate)
+ *  2. If not found → tryLaunchApp(text) — finds installed app whose label contains
+ *     the text and launches it with FLAG_ACTIVITY_NEW_TASK (handles launcher icons
+ *     that don't appear in the accessibility tree)
  *
- * Sequential flow:
- *   Step 1: search for target[0].textQuery → if found, tap → advance to step 2
- *   Step 2: search for target[1].textQuery → if found, tap → back to step 1
- *   ...and so on indefinitely until STOP is pressed.
+ * This handles both in-app UI elements (like a "Homepage" button) AND
+ * launcher app icons (like the "Via" browser icon) reliably.
  */
 class FloatingOverlayService : Service() {
 
@@ -100,6 +100,7 @@ class FloatingOverlayService : Service() {
 
         windowManager.addView(overlayView, layoutParams)
         setupDrag()
+
         binding.btnToggle.setOnClickListener {
             if (isDetecting) stopDetection() else startDetection()
         }
@@ -109,7 +110,6 @@ class FloatingOverlayService : Service() {
     private fun setupDrag() {
         var initX = 0; var initY = 0
         var touchX = 0f; var touchY = 0f
-
         overlayView.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
@@ -137,6 +137,33 @@ class FloatingOverlayService : Service() {
         binding.tvStep.text = step
     }
 
+    // ─── App-launch fallback ──────────────────────────────────────────────────
+
+    /**
+     * Tries to find an installed app whose label contains [query] (case-insensitive)
+     * and launches it. Returns true if launched, false if no matching app found.
+     *
+     * This is the fallback for launcher icons that are NOT exposed in the
+     * accessibility tree — e.g. some launchers don't surface icon text as nodes.
+     */
+    private fun tryLaunchApp(query: String): Boolean {
+        val q = query.lowercase().trim()
+        val pm = packageManager
+        val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+
+        val match = apps.firstOrNull { app ->
+            try {
+                pm.getApplicationLabel(app).toString().lowercase().contains(q)
+            } catch (_: Exception) { false }
+        } ?: return false
+
+        val launchIntent = pm.getLaunchIntentForPackage(match.packageName) ?: return false
+        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        Log.d(TAG, "Launching app '${match.packageName}' for query '$query'")
+        startActivity(launchIntent)
+        return true
+    }
+
     // ─── Sequential Detection Loop ────────────────────────────────────────────
 
     private fun startDetection() {
@@ -161,33 +188,47 @@ class FloatingOverlayService : Service() {
                 if (enabledTargets.isEmpty()) break
 
                 val stepIdx = currentStepIndex % enabledTargets.size
-                val target: DetectionTarget = enabledTargets[stepIdx]
-                val totalSteps = enabledTargets.size
+                val target = enabledTargets[stepIdx]
+                val total = enabledTargets.size
 
                 withContext(Dispatchers.Main) {
-                    updateUI("Step ${stepIdx + 1}/$totalSteps", "")
+                    updateUI("Searching…", "Step ${stepIdx + 1}/$total")
                 }
 
-                // Use accessibility node finder (not OCR)
+                // ── Strategy 1: AccessibilityService node finding ──────────────
                 val tapPoint = withContext(Dispatchers.IO) {
                     AutoClickAccessibilityService.instance?.findNodeCenter(target.textQuery)
                 }
 
-                Log.d(TAG, "Step $stepIdx '${target.textQuery}' → $tapPoint")
-
                 if (tapPoint != null) {
+                    Log.d(TAG, "Step $stepIdx '${target.textQuery}' → node tap at $tapPoint")
                     withContext(Dispatchers.Main) {
-                        updateUI("Tapped! Wait…", "Step ${stepIdx + 1}/$totalSteps")
+                        updateUI("Tapped!", "Step ${stepIdx + 1}/$total")
                     }
                     AutoClickAccessibilityService.instance?.tap(tapPoint.x, tapPoint.y)
                     currentStepIndex++
                     delay(target.delayAfterMs)
-                } else {
-                    withContext(Dispatchers.Main) {
-                        updateUI("Searching…", "Step ${stepIdx + 1}/$totalSteps")
-                    }
-                    delay(POLL_INTERVAL_MS)
+                    continue
                 }
+
+                // ── Strategy 2: App launch fallback (for launcher icons) ────────
+                val launched = withContext(Dispatchers.Main) {
+                    tryLaunchApp(target.textQuery)
+                }
+
+                if (launched) {
+                    Log.d(TAG, "Step $stepIdx '${target.textQuery}' → launched app")
+                    withContext(Dispatchers.Main) {
+                        updateUI("Launched!", "Step ${stepIdx + 1}/$total")
+                    }
+                    currentStepIndex++
+                    // Give the app time to open before next step
+                    delay(maxOf(target.delayAfterMs, 1500L))
+                    continue
+                }
+
+                // ── Nothing found — keep polling ────────────────────────────────
+                delay(POLL_INTERVAL_MS)
             }
         }
     }
